@@ -55,6 +55,7 @@ async def run_task(
     prompt: str,
     model: str = "sonnet",
     cwd: str | None = None,
+    resume: str | None = None,
     system_prompt: str | None = None,
     allowed_tools: list[str] | None = None,
     disallowed_tools: list[str] | None = None,
@@ -78,6 +79,8 @@ async def run_task(
         }
     if cwd:
         options_dict["cwd"] = cwd
+    if resume:
+        options_dict["resume"] = resume
     if allowed_tools:
         options_dict["allowed_tools"] = allowed_tools
     if disallowed_tools:
@@ -166,8 +169,18 @@ async def run_task(
                                     yield ev
 
                 elif isinstance(message, ResultMessage):
-                    _log("ResultMessage received")
-                    pass
+                    session_id = getattr(message, "session_id", None)
+                    cost_usd = getattr(message, "total_cost_usd", None)
+                    _log(f"ResultMessage: session_id={session_id} cost_usd={cost_usd}")
+                    elapsed = int((time.monotonic() - start) * 1000)
+                    done_ev = {
+                        "type": "done",
+                        "session_id": session_id,
+                        "cost_usd": cost_usd,
+                        "duration_ms": elapsed,
+                    }
+                    append_event(task_id, done_ev)
+                    yield done_ev
 
     except TimeoutError:
         elapsed = int((time.monotonic() - start) * 1000)

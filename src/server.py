@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import uuid
@@ -50,6 +51,7 @@ async def task(
     prompt: Annotated[str, "Task prompt for the agent"],
     model: Annotated[str, "Model: sonnet, opus, or haiku"] = "sonnet",
     cwd: Annotated[str | None, "Working directory for the agent"] = None,
+    session_id: Annotated[str | None, "Session ID for resuming a previous conversation"] = None,
     system_prompt: Annotated[str | None, "Custom system prompt"] = None,
     allowed_tools: Annotated[list[str] | None, "List of allowed tools"] = None,
     disallowed_tools: Annotated[list[str] | None, "List of disallowed tools"] = None,
@@ -64,6 +66,8 @@ async def task(
 
     result_text = ""
     tool_count = 0
+    new_session_id = None
+    cost_usd = None
 
     try:
         async for event in run_task(
@@ -71,6 +75,7 @@ async def task(
             prompt=prompt,
             model=model,
             cwd=cwd,
+            resume=session_id,
             system_prompt=system_prompt,
             allowed_tools=allowed_tools,
             disallowed_tools=disallowed_tools,
@@ -83,6 +88,9 @@ async def task(
                 result_text = event.get("content", "")
             elif event["type"] == "error":
                 result_text = f"Error: {event.get('content', 'unknown error')}"
+            elif event["type"] == "done":
+                new_session_id = event.get("session_id")
+                cost_usd = event.get("cost_usd")
     except Exception as e:
         _log(f"task {task_id} FAILED: {type(e).__name__}: {e}")
         result_text = f"Error: {type(e).__name__}: {e}"
@@ -90,8 +98,12 @@ async def task(
     if not result_text:
         result_text = f"Task {task_id} completed. Tools used: {tool_count}"
 
-    _log(f"task {task_id} done: {len(result_text)} chars")
-    return result_text
+    _log(f"task {task_id} done: {len(result_text)} chars session_id={new_session_id} cost={cost_usd}")
+    return json.dumps({
+        "result": result_text,
+        "session_id": new_session_id,
+        "cost_usd": cost_usd,
+    }, ensure_ascii=False)
 
 
 if __name__ == "__main__":
