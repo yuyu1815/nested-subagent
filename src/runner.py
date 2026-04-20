@@ -17,7 +17,8 @@ from claude_agent_sdk import (
 
 from src.storage import append_event
 
-LOG_PATH = Path("/tmp/nested-subagent-debug.log")
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+LOG_PATH = PROJECT_ROOT / ".claude" / "debug.log"
 
 SUBAGENT_PROMPT_APPEND = (
     "# レスポンスルール\n"

@@ -4,7 +4,8 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-TASKS_DIR = Path("/tmp/nested-subagent-tasks")
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+TASKS_DIR = PROJECT_ROOT / ".claude" / "tasks"
 
 
 def ensure_dir() -> None:
