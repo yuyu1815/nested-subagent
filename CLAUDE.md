@@ -6,8 +6,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Python MCP server that runs nested Claude subagents via the Claude Agent SDK. Exposes a single `task` tool through FastMCP that executes delegated tasks with full tool access.
 
-Design influenced by [heyinc/kuro](https://github.com/heyinc/kuro) — a production Claude agent system for STORES.
-
 ## Commands
 
 ```bash
@@ -49,10 +47,10 @@ Claude Code (host)
 
 ### Key Design Decisions
 
-- **Same-process execution**: Unlike kuro (child process spawn), we call `query()` directly. Simpler, sufficient for CLI plugin use case.
+- **Same-process execution**: Calls `query()` directly in the same process. Simpler than child process spawn, sufficient for CLI plugin use case.
 - **bypassPermissions hardcoded**: Subagents must not prompt for permission — the host agent handles authorization.
 - **Preset system prompt with append**: Uses `claude_code` preset to retain full tool access, appends response rules to control output format.
-- **Error recovery**: If a partial result was captured before an error/timeout, return it instead of failing (kuro pattern).
+- **Error recovery**: If a partial result was captured before an error/timeout, return it instead of failing.
 
 ## Directory Structure
 
