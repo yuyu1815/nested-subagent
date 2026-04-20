@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 
 from claude_agent_sdk import query, ClaudeAgentOptions
@@ -16,28 +17,66 @@ from claude_agent_sdk import (
 
 from src.storage import append_event
 
+LOG_PATH = Path("/tmp/nested-subagent-debug.log")
+
+SUBAGENT_PROMPT_APPEND = (
+    "# レスポンスルール\n"
+    "\n"
+    "あなたは委任されたタスクを実行するサブエージェントです。\n"
+    "\n"
+    "## 返却に含めるもの\n"
+    "- タスクへの直接の回答（これが最優先）\n"
+    "- 発見した重要なデータ（ファイルパス、行番号、値）\n"
+    "- エラーが起きた場合：何が失敗し、なぜか\n"
+    "\n"
+    "## 返却に含めないもの\n"
+    "- 作業過程の説明（「ファイルを読みました」「調査しました」）\n"
+    "- 謝罪や前置き\n"
+    "- 頼まれていない提案や改善案\n"
+    "\n"
+    "## フォーマット\n"
+    "- 回答を先頭に置く\n"
+    "- 複数項目はリスト・テーブルで構造化する\n"
+    "- 特に指定がなければ2000文字以内\n"
+)
+
+
+def _log(msg: str) -> None:
+    """Append a debug line to the log file."""
+    from datetime import datetime, timezone
+    ts = datetime.now(timezone.utc).isoformat()
+    with open(LOG_PATH, "a") as f:
+        f.write(f"[{ts}] [runner] {msg}\n")
+
 
 async def run_task(
     task_id: str,
     prompt: str,
     model: str = "sonnet",
+    cwd: str | None = None,
     system_prompt: str | None = None,
     allowed_tools: list[str] | None = None,
     disallowed_tools: list[str] | None = None,
     max_budget_usd: float | None = None,
-    timeout: int = 600000,  # ms, default 10 minutes
+    timeout: int = 600000,
 ) -> AsyncIterator[dict]:
-    """Run a Claude Agent SDK task and yield structured events.
-
-    Each yielded dict is also persisted to JSONL via storage.
-    """
+    """Run a Claude Agent SDK task and yield structured events."""
     start = time.monotonic()
+    _log(f"run_task start: task_id={task_id} model={model} cwd={cwd}")
 
     # Build SDK options dict
     options_dict: dict[str, Any] = {"model": model}
     options_dict["permission_mode"] = "bypassPermissions"
     if system_prompt:
         options_dict["system_prompt"] = system_prompt
+    else:
+        options_dict["system_prompt"] = {
+            "type": "preset",
+            "preset": "claude_code",
+            "append": SUBAGENT_PROMPT_APPEND,
+        }
+    if cwd:
+        options_dict["cwd"] = cwd
     if allowed_tools:
         options_dict["allowed_tools"] = allowed_tools
     if disallowed_tools:
@@ -45,6 +84,7 @@ async def run_task(
     if max_budget_usd:
         options_dict["max_budget_usd"] = max_budget_usd
 
+    _log(f"options built: {list(options_dict.keys())}")
     options = ClaudeAgentOptions(**options_dict)
 
     # Init event
@@ -53,27 +93,24 @@ async def run_task(
     yield init_event
 
     tool_starts: dict[str, float] = {}
-    last_result_text = ""  # Track for error recovery
+    last_result_text = ""
 
     try:
         async with asyncio.timeout(timeout / 1000):
+            _log("query() starting")
             async for message in query(prompt=prompt, options=options):
-                # Process AssistantMessage (contains tool use, text, thinking blocks)
                 if isinstance(message, AssistantMessage):
                     content = getattr(message, "content", None)
                     if content and isinstance(content, list):
                         for block in content:
                             if isinstance(block, ToolUseBlock):
-                                # Tool invocation started
                                 tool_id = block.id
                                 tool_name = block.name
                                 tool_input = block.input
                                 tool_starts[tool_id] = time.monotonic()
 
-                                # Summarize args
                                 args_summary = ""
                                 if isinstance(tool_input, dict):
-                                    # Take first string value as summary
                                     for v in tool_input.values():
                                         if isinstance(v, str):
                                             args_summary = v[:100]
@@ -86,10 +123,10 @@ async def run_task(
                                     "args": args_summary,
                                 }
                                 append_event(task_id, ev)
+                                _log(f"tool_start: {tool_name}")
                                 yield ev
 
                             elif isinstance(block, ToolResultBlock):
-                                # Tool result (error or success)
                                 tool_id = block.tool_use_id
                                 dur = 0
                                 if tool_id in tool_starts:
@@ -114,27 +151,27 @@ async def run_task(
                                     "detail": content_text,
                                 }
                                 append_event(task_id, ev)
+                                _log(f"tool_end: {tool_id} status={'error' if is_error else 'ok'}")
                                 yield ev
 
                             elif isinstance(block, TextBlock):
-                                # Text content from assistant
                                 text = block.text
                                 if text:
-                                    last_result_text = text  # Track for recovery
+                                    last_result_text = text
                                     elapsed = int((time.monotonic() - start) * 1000)
                                     ev = {"type": "result", "content": text, "duration_ms": elapsed}
                                     append_event(task_id, ev)
+                                    _log(f"result: {len(text)} chars, {elapsed}ms")
                                     yield ev
 
-                # ResultMessage marks the end of the task
                 elif isinstance(message, ResultMessage):
-                    # Just acknowledge completion; actual content was in prior TextBlock
+                    _log("ResultMessage received")
                     pass
 
     except TimeoutError:
         elapsed = int((time.monotonic() - start) * 1000)
+        _log(f"TIMEOUT after {elapsed}ms")
         if last_result_text:
-            # Recovery: we have a partial result, return it
             ev = {"type": "result", "content": last_result_text, "duration_ms": elapsed}
             append_event(task_id, ev)
             yield ev
@@ -149,8 +186,8 @@ async def run_task(
 
     except Exception as e:
         elapsed = int((time.monotonic() - start) * 1000)
+        _log(f"ERROR: {type(e).__name__}: {e}")
         if last_result_text:
-            # Recovery: return captured result despite error
             ev = {"type": "result", "content": last_result_text, "duration_ms": elapsed}
             append_event(task_id, ev)
             yield ev

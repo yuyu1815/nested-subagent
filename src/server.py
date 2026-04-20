@@ -3,6 +3,8 @@ from __future__ import annotations
 import subprocess
 import sys
 import uuid
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Annotated
 
 from fastmcp import FastMCP
@@ -10,33 +12,43 @@ from fastmcp import FastMCP
 from src.runner import run_task
 from src.storage import append_event
 
+LOG_PATH = Path("/tmp/nested-subagent-debug.log")
+
 mcp = FastMCP(
     name="nested-subagent",
     instructions="Nested subagent with TUI viewer. Runs Claude Agent SDK tasks, saves JSONL, shows real-time TUI.",
 )
 
-# Track TUI process
 _tui_process: subprocess.Popen | None = None
+
+
+def _log(msg: str) -> None:
+    """Append a debug line to the log file."""
+    ts = datetime.now(timezone.utc).isoformat()
+    with open(LOG_PATH, "a") as f:
+        f.write(f"[{ts}] [server] {msg}\n")
 
 
 def _ensure_tui() -> None:
     """Launch TUI viewer if not already running."""
     global _tui_process
     if _tui_process is not None and _tui_process.poll() is None:
-        return  # still running
+        return
     try:
         _tui_process = subprocess.Popen(
             [sys.executable, "-m", "src.tui.app"],
             start_new_session=True,
         )
+        _log("TUI launched")
     except Exception as e:
-        print(f"[nested-subagent] TUI launch failed: {e}", file=sys.stderr)
+        _log(f"TUI launch failed: {e}")
 
 
 @mcp.tool()
 async def task(
     prompt: Annotated[str, "Task prompt for the agent"],
     model: Annotated[str, "Model: sonnet, opus, or haiku"] = "sonnet",
+    cwd: Annotated[str | None, "Working directory for the agent"] = None,
     system_prompt: Annotated[str | None, "Custom system prompt"] = None,
     allowed_tools: Annotated[list[str] | None, "List of allowed tools"] = None,
     disallowed_tools: Annotated[list[str] | None, "List of disallowed tools"] = None,
@@ -45,11 +57,10 @@ async def task(
 ) -> str:
     """Run a nested Claude agent task. Results are streamed to TUI and saved as JSONL."""
     task_id = uuid.uuid4().hex[:8]
+    _log(f"task called: task_id={task_id} model={model} prompt={prompt[:80]}")
 
-    # Launch TUI viewer
     _ensure_tui()
 
-    # Run agent and collect result
     result_text = ""
     tool_count = 0
 
@@ -58,6 +69,7 @@ async def task(
             task_id=task_id,
             prompt=prompt,
             model=model,
+            cwd=cwd,
             system_prompt=system_prompt,
             allowed_tools=allowed_tools,
             disallowed_tools=disallowed_tools,
@@ -71,16 +83,16 @@ async def task(
             elif event["type"] == "error":
                 result_text = f"Error: {event.get('content', 'unknown error')}"
     except Exception as e:
-        import sys
-        print(f"[nested-subagent] task {task_id} failed: {e}", file=sys.stderr)
+        _log(f"task {task_id} FAILED: {type(e).__name__}: {e}")
         result_text = f"Error: {type(e).__name__}: {e}"
 
-    # If no explicit result, note completion
     if not result_text:
         result_text = f"Task {task_id} completed. Tools used: {tool_count}"
 
+    _log(f"task {task_id} done: {len(result_text)} chars")
     return result_text
 
 
 if __name__ == "__main__":
+    _log("MCP server starting")
     mcp.run(transport="stdio")
