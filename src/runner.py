@@ -21,7 +21,6 @@ async def run_task(
     task_id: str,
     prompt: str,
     model: str = "sonnet",
-    permission_mode: str | None = "bypassPermissions",
     system_prompt: str | None = None,
     allowed_tools: list[str] | None = None,
     disallowed_tools: list[str] | None = None,
@@ -36,8 +35,7 @@ async def run_task(
 
     # Build SDK options dict
     options_dict: dict[str, Any] = {"model": model}
-    if permission_mode:
-        options_dict["permission_mode"] = permission_mode
+    options_dict["permission_mode"] = "bypassPermissions"
     if system_prompt:
         options_dict["system_prompt"] = system_prompt
     if allowed_tools:

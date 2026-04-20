@@ -37,7 +37,6 @@ def _ensure_tui() -> None:
 async def task(
     prompt: Annotated[str, "Task prompt for the agent"],
     model: Annotated[str, "Model: sonnet, opus, or haiku"] = "sonnet",
-    permission_mode: Annotated[str | None, "Permission mode: default, acceptEdits, bypassPermissions, plan"] = "bypassPermissions",
     system_prompt: Annotated[str | None, "Custom system prompt"] = None,
     allowed_tools: Annotated[list[str] | None, "List of allowed tools"] = None,
     disallowed_tools: Annotated[list[str] | None, "List of disallowed tools"] = None,
@@ -59,7 +58,6 @@ async def task(
             task_id=task_id,
             prompt=prompt,
             model=model,
-            permission_mode=permission_mode,
             system_prompt=system_prompt,
             allowed_tools=allowed_tools,
             disallowed_tools=disallowed_tools,
