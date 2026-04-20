@@ -4,85 +4,130 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a Claude Code plugin that enables **unlimited nested subagents**. The native Task tool blocks subagents from spawning other subagents (via tool filtering in `AgentTool`). This plugin bypasses that limitation by spawning fresh `claude -p` processes, which are full main agents with complete tool access.
+Python MCP server that runs nested Claude subagents via the Claude Agent SDK. Exposes a single `task` tool through FastMCP that executes delegated tasks with full tool access.
+
+Design influenced by [heyinc/kuro](https://github.com/heyinc/kuro) — a production Claude agent system for STORES.
 
 ## Commands
 
-### Build & Development
-
 ```bash
-cd mcp-server && bun run build      # Build MCP server (uses tsdown)
-cd mcp-server && bun run dev        # Run MCP server in development mode (tsx)
-cd mcp-server && bun run typecheck  # TypeScript type checking
+uv run python -m src.server          # Run MCP server (stdio transport)
+uv run python -m py_compile src/runner.py  # Syntax check
+uv run python -m py_compile src/server.py  # Syntax check
 ```
 
-### Testing
+### MCP Registration (`.mcp.json`)
 
-```bash
-cd mcp-server && bun run test           # Run unit tests
-cd mcp-server && bun run test:watch # Watch mode
-cd mcp-server && bun run test:integration  # Integration tests (*.integration.test.ts files)
+```json
+{
+  "mcpServers": {
+    "nested-subagent": {
+      "command": "uv",
+      "args": ["run", "python", "-m", "src.server"],
+      "cwd": "."
+    }
+  }
+}
 ```
 
-### Plugin Installation
-
-```bash
-claude --plugin-dir ./       # Per-session usage
-```
+After code changes, reconnect with `/mcp` in Claude Code.
 
 ## Architecture
 
-### Key Insight
-
-The native Task tool's recursion blocker (`.filter(_ => _.name !== AgentTool.name)`) is **process-local**. By spawning a fresh `claude -p` process via MCP, we create a new main agent that has full tool access including the Task tool.
-
-```markdown
-Native:  Main → Subagent → BLOCKED (Task tool filtered out)
-Plugin:  Main → MCP Tool → spawn "claude -p" → Fresh Main Agent → CAN use Task → Unlimited nesting
+```
+Claude Code (host)
+  └── MCP tool call ──→ server.py (FastMCP)
+       └── run_task() ──→ runner.py
+            ├── ClaudeAgentOptions (bypassPermissions, preset+append)
+            ├── query() ──→ Claude Agent SDK
+            │    ├── AssistantMessage → tool_start/tool_end/result events
+            │    └── ResultMessage → session_id, cost_usd
+            ├── Events → JSONL (.claude/tasks/)
+            ├── Events → TUI viewer (Textual)
+            └── Debug → .claude/debug.log
 ```
 
-### Directory Structure
+### Key Design Decisions
 
-```markdown
-fallback-agent/
-├── .claude-plugin/
-│   └── marketplace.json     # Plugin manifest for marketplace distribution
-├── .mcp.json               # MCP server configuration
-├── mcp-server/
-│   ├── src/index.ts        # MCP server implementation (core logic)
-│   ├── dist/               # Built output (bundled with tsdown)
-│   └── test/               # Unit and integration tests
-└── src/                    # Reference Claude Code source (for understanding internals)
+- **Same-process execution**: Unlike kuro (child process spawn), we call `query()` directly. Simpler, sufficient for CLI plugin use case.
+- **bypassPermissions hardcoded**: Subagents must not prompt for permission — the host agent handles authorization.
+- **Preset system prompt with append**: Uses `claude_code` preset to retain full tool access, appends response rules to control output format.
+- **Error recovery**: If a partial result was captured before an error/timeout, return it instead of failing (kuro pattern).
+
+## Directory Structure
+
+```
+nested-subagent/
+├── .mcp.json              # MCP server configuration
+├── .claude/
+│   ├── tasks/             # JSONL event logs per task (gitignored)
+│   └── debug.log          # Debug log (gitignored)
+├── src/
+│   ├── server.py          # FastMCP server, task tool definition
+│   ├── runner.py          # Agent execution via Claude Agent SDK query()
+│   ├── storage.py         # JSONL persistence
+│   ├── models.py          # Data models (TaskStatus, ToolEvent, etc.)
+│   └── tui/
+│       ├── app.py         # Textual TUI main app
+│       ├── task_list.py   # Task list widget
+│       └── task_detail.py # Task detail widget
+├── pyproject.toml         # Python project config (uv)
+└── CLAUDE.md              # This file
 ```
 
-### MCP Server (`mcp-server/src/index.ts`)
+## Key Files
 
-The MCP server exposes a single tool named `Task` that:
-
-1. Spawns `claude -p --output-format stream-json --verbose` subprocess
-2. Parses streaming JSON output line-by-line for real-time progress
-3. Emits MCP `notifications/progress` for each tool use
-4. Passes `--plugin-dir` to spawned process to enable recursive nesting
-5. Handles abort via SIGTERM/SIGKILL
-
-**Critical implementation detail:** `proc.stdin?.end()` must be called immediately after spawn - the prompt is passed via CLI argument, not stdin.
-
-### Debug Logging
-
-All MCP server operations log to `/tmp/fallback-agent-debug.log` for troubleshooting.
+| File | Role |
+|------|------|
+| `src/server.py` | FastMCP server. Defines `task` tool, launches TUI, collects results. Returns JSON with result + session_id + cost. |
+| `src/runner.py` | Core execution. Builds ClaudeAgentOptions, calls `query()`, yields structured events. Contains `SUBAGENT_PROMPT_APPEND`. |
+| `src/storage.py` | Appends events to `.claude/tasks/{task_id}.jsonl`. |
 
 ## Tool Parameters
 
-The `mcp__plugin_fallback_agent__Task` tool accepts:
+The `mcp__nested_subagent__task` tool accepts:
 
-| Parameter                          | Type        | Description                                                                                       |
-|------------------------------------|-------------|---------------------------------------------------------------------------------------------------|
-| `prompt`                           | string      | **Required.** Task for the agent                                                                  |
-| `model`                            | string      | Model to use: `sonnet`, `opus`, or `haiku`. *(Default: `sonnet`)*                                 |
-| `timeout`                          | number      | Timeout in milliseconds. *(Default: `600000`)*                                                    |
-| `allowWrite`                       | boolean     | Enable `--dangerously-skip-permissions` to allow file writes/tools that modify the filesystem     |
-| `permissionMode`                   | string      | Permission mode: one of `default`, `acceptEdits`, `bypassPermissions`, or `plan`                  |
-| `systemPrompt`                     | string      | Custom system prompt                                                                              |
-| `allowedTools`                     | string[]    | List of tools explicitly allowed for this agent (overrides default tool access)                   |
-| `disallowedTools`                  | string[]    | List of tools to disallow for this agent (overrides default tool access)                          |
-| `maxBudgetUsd`                     | number      | Optional cost limit (in USD) for this task                                                        |
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `prompt` | string | **Required.** Task for the agent |
+| `model` | string | `sonnet`, `opus`, or `haiku` *(Default: `sonnet`)* |
+| `cwd` | string | Working directory for the agent |
+| `session_id` | string | Session ID for resuming a previous conversation |
+| `system_prompt` | string | Custom system prompt (overrides preset+append) |
+| `allowed_tools` | string[] | Tools to allow |
+| `disallowed_tools` | string[] | Tools to disallow |
+| `max_budget_usd` | number | Cost limit in USD |
+| `timeout` | number | Timeout in milliseconds *(Default: `600000`)* |
+
+### Return Format
+
+```json
+{
+  "result": "Task output text",
+  "session_id": "abc123-...",
+  "cost_usd": 0.0042
+}
+```
+
+`session_id` can be passed back to resume the conversation.
+
+## Debug Logging
+
+All operations log to `.claude/debug.log`:
+
+```
+[timestamp] [server] task called: task_id=535c086a model=haiku prompt=...
+[timestamp] [runner] run_task start: task_id=535c086a model=haiku cwd=None
+[timestamp] [runner] options built: ['model', 'permission_mode', 'system_prompt']
+[timestamp] [runner] query() starting
+[timestamp] [runner] result: 1 chars, 4352ms
+[timestamp] [runner] ResultMessage: session_id=... cost_usd=0.0042
+[timestamp] [server] task 535c086a done: 1 chars
+```
+
+## Dependencies
+
+- `claude-agent-sdk>=0.1.63` — Agent execution
+- `fastmcp>=3.2.4` — MCP server framework
+- `textual>=8.2.4` — TUI viewer
+- `watchfiles>=1.1.1` — File watching for TUI
