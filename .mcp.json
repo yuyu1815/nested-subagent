@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "nested-subagent": {
+      "command": "uv",
+      "args": ["run", "python", "-m", "src.server"],
+      "cwd": "."
+    }
+  }
+}

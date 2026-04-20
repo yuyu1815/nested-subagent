@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+dist/
+*.egg-info/
+.DS_Store
+/tasks/
+/tmp/
+.mypy_cache/
+.ruff_cache/
+.claude/settings.json

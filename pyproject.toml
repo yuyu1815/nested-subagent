@@ -1,0 +1,12 @@
+[project]
+name = "nested-subagent"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "claude-agent-sdk>=0.1.63",
+    "fastmcp>=3.2.4",
+    "textual>=8.2.4",
+    "watchfiles>=1.1.1",
+]
